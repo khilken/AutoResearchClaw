@@ -152,6 +152,15 @@ def test_validate_config_accepts_llm_wire_api_responses(tmp_path: Path):
     assert result.ok is True
 
 
+def test_validate_config_accepts_llm_wire_api_ollama_native(tmp_path: Path):
+    data = _valid_config_data()
+    data["llm"]["wire_api"] = "ollama_native"
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is True
+
+
 def test_validate_config_rejects_invalid_llm_wire_api(tmp_path: Path):
     data = _valid_config_data()
     data["llm"]["wire_api"] = "responses_only"
@@ -234,6 +243,19 @@ def test_rcconfig_from_dict_parses_llm_wire_api(tmp_path: Path):
     config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
 
     assert config.llm.wire_api == "responses"
+
+
+def test_rcconfig_from_dict_parses_ollama_native_options(tmp_path: Path):
+    data = _valid_config_data()
+    data["llm"].update(
+        {"wire_api": "ollama_native", "ollama_think": False, "ollama_num_ctx": 32768}
+    )
+
+    config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+
+    assert config.llm.wire_api == "ollama_native"
+    assert config.llm.ollama_think is False
+    assert config.llm.ollama_num_ctx == 32768
 
 
 def test_rcconfig_from_dict_uses_default_literature_search(tmp_path: Path):

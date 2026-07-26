@@ -274,6 +274,73 @@ def test_responses_wire_api_uses_responses_endpoint(monkeypatch: pytest.MonkeyPa
     assert resp.total_tokens == 18
 
 
+def test_ollama_native_wire_api_disables_thinking_and_sets_context(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req: urllib.request.Request, timeout: int) -> _DummyHTTPResponse:
+        captured["request"] = req
+        captured["timeout"] = timeout
+        return _DummyHTTPResponse(
+            {
+                "model": "qwen3.5:9b",
+                "message": {"role": "assistant", "content": "final answer", "thinking": ""},
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 11,
+                "eval_count": 7,
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = LLMClient(
+        LLMConfig(
+            base_url="http://ollama.example:11434",
+            api_key="ollama",
+            wire_api="ollama_native",
+            primary_model="qwen3.5:9b",
+            fallback_models=[],
+            ollama_think=False,
+            ollama_num_ctx=32768,
+        )
+    )
+
+    response = client._raw_call(
+        "qwen3.5:9b", [{"role": "user", "content": "hello"}], 123, 0.2, False
+    )
+
+    request = captured["request"]
+    assert isinstance(request, urllib.request.Request)
+    assert request.full_url == "http://ollama.example:11434/api/chat"
+    assert isinstance(request.data, bytes)
+    body = json.loads(request.data.decode("utf-8"))
+    assert body == {
+        "model": "qwen3.5:9b",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": False,
+        "think": False,
+        "options": {"num_ctx": 32768, "num_predict": 123, "temperature": 0.2},
+    }
+    assert response.content == "final answer"
+    assert response.prompt_tokens == 11
+    assert response.completion_tokens == 7
+    assert response.total_tokens == 18
+    assert response.finish_reason == "stop"
+
+
+def test_ollama_native_endpoint_normalizes_v1_base_url():
+    client = LLMClient(
+        LLMConfig(
+            base_url="http://ollama.example:11434/v1",
+            api_key="ollama",
+            wire_api="ollama_native",
+        )
+    )
+
+    assert client._endpoint_url(client.config.base_url) == "http://ollama.example:11434/api/chat"
+
+
 def test_responses_wire_api_includes_temperature_for_gpt5_models(
     monkeypatch: pytest.MonkeyPatch,
 ):
