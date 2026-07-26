@@ -29,11 +29,16 @@ from researchclaw.literature.search import (
     search_papers,
     search_papers_multi_query,
 )
+from researchclaw.pipeline.stage_impls._literature import _execute_literature_collect
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures & helpers
 # ──────────────────────────────────────────────────────────────────────
+
+
+def test_literature_collect_does_not_shadow_os_before_environment_lookup() -> None:
+    assert "os" not in _execute_literature_collect.__code__.co_varnames
 
 
 def _make_paper(**kwargs: Any) -> Paper:
