@@ -234,6 +234,37 @@ def test_check_model_chain_no_models() -> None:
     assert "No models configured" in result.detail
 
 
+def test_check_ollama_native_health_uses_tags_endpoint() -> None:
+    payload = {"models": [{"name": "qwen3.5:9b"}, {"model": "phi4:14b"}]}
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_DummyHTTPResponse(status=200, payload=payload),
+    ) as urlopen:
+        connectivity, api_key, model_chain = health.check_ollama_native(
+            "http://ollama.test:11434", "qwen3.5:9b", ()
+        )
+
+    assert urlopen.call_args.args[0].full_url == "http://ollama.test:11434/api/tags"
+    assert connectivity.status == "pass"
+    assert api_key.status == "pass"
+    assert model_chain.status == "pass"
+    assert "qwen3.5:9b" in model_chain.detail
+
+
+def test_check_ollama_native_health_fails_when_model_missing() -> None:
+    payload = {"models": [{"name": "phi4:14b"}]}
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_DummyHTTPResponse(status=200, payload=payload),
+    ):
+        _, _, model_chain = health.check_ollama_native(
+            "http://ollama.test:11434", "qwen3.5:9b", ()
+        )
+
+    assert model_chain.status == "fail"
+    assert "qwen3.5:9b" in model_chain.detail
+
+
 def test_is_anthropic_url() -> None:
     assert health._is_anthropic("https://api.anthropic.com")
     assert health._is_anthropic("https://api.anthropic.com/v1")

@@ -152,6 +152,89 @@ def _models_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/models"
 
 
+def check_ollama_native(
+    base_url: str,
+    primary_model: str,
+    fallback_models: tuple[str, ...] | list[str] = (),
+) -> tuple[CheckResult, CheckResult, CheckResult]:
+    """Check a native Ollama endpoint and its configured model chain."""
+    url = f"{base_url.rstrip('/')}/api/tags"
+    request = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload_obj = json.loads(response.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        connectivity = CheckResult(
+            name="llm_connectivity",
+            status="fail",
+            detail=f"Ollama endpoint unreachable: {exc}",
+            fix="Verify the Ollama host and /api/tags endpoint",
+        )
+        api_key = CheckResult(
+            name="api_key_valid",
+            status="warn",
+            detail="Could not verify keyless Ollama access",
+            fix="Retry when the Ollama endpoint is available",
+        )
+        model_chain = CheckResult(
+            name="model_chain",
+            status="warn",
+            detail="Could not verify Ollama model availability",
+            fix="Retry when the Ollama endpoint is available",
+        )
+        return connectivity, api_key, model_chain
+
+    models_obj = payload_obj.get("models", []) if isinstance(payload_obj, dict) else []
+    available = {
+        str(item.get("name") or item.get("model") or "")
+        for item in models_obj
+        if isinstance(item, dict)
+    }
+    configured = [
+        item for item in [primary_model, *fallback_models] if item and item.strip()
+    ]
+    missing = [item for item in configured if item not in available]
+    present = [item for item in configured if item in available]
+
+    connectivity = CheckResult(
+        name="llm_connectivity", status="pass", detail=f"Reachable: {url}"
+    )
+    api_key = CheckResult(
+        name="api_key_valid",
+        status="pass",
+        detail="Native Ollama endpoint does not require an API key",
+    )
+    if not configured:
+        model_chain = CheckResult(
+            name="model_chain",
+            status="warn",
+            detail="No models configured",
+            fix="Set llm.primary_model",
+        )
+    elif not present:
+        model_chain = CheckResult(
+            name="model_chain",
+            status="fail",
+            detail=f"No configured Ollama models available: {', '.join(missing)}",
+            fix="Install the model or update llm.primary_model",
+        )
+    elif missing:
+        model_chain = CheckResult(
+            name="model_chain",
+            status="pass",
+            detail=(
+                f"Available: {', '.join(present)}; unavailable: {', '.join(missing)}"
+            ),
+        )
+    else:
+        model_chain = CheckResult(
+            name="model_chain",
+            status="pass",
+            detail=f"All models available: {', '.join(present)}",
+        )
+    return connectivity, api_key, model_chain
+
+
 def _is_timeout(exc: BaseException) -> bool:
     if isinstance(exc, TimeoutError):
         return True
@@ -721,11 +804,13 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
     sandbox_python_path = ""
     experiment_mode = ""
     provider = ""
+    wire_api = ""
     acp_agent_command = "claude"
 
     try:
         config = RCConfig.load(path, check_paths=False)
         provider = config.llm.provider
+        wire_api = config.llm.wire_api
         base_url = config.llm.base_url
         api_key = config.llm.api_key or os.environ.get(config.llm.api_key_env, "")
         model = config.llm.primary_model
@@ -738,6 +823,10 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
 
     if provider == "acp":
         checks.append(check_acp_agent(acp_agent_command))
+    elif provider == "ollama" and wire_api == "ollama_native":
+        checks.extend(
+            check_ollama_native(base_url, model, fallback_models)
+        )
     else:
         checks.append(check_llm_connectivity(base_url, api_key))
         checks.append(check_api_key_valid(base_url, api_key))
