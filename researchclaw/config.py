@@ -195,6 +195,8 @@ class LlmConfig:
     provider: str
     base_url: str = ""
     wire_api: str = "chat_completions"
+    ollama_think: bool | str = False
+    ollama_num_ctx: int = 32768
     api_key_env: str = ""
     api_key: str = ""
     primary_model: str = ""
@@ -1108,6 +1110,7 @@ def validate_config(
     if not _is_blank(llm_wire_api) and llm_wire_api not in (
         "chat_completions",
         "responses",
+        "ollama_native",
     ):
         errors.append(f"Invalid llm.wire_api: {llm_wire_api}")
 
@@ -1166,6 +1169,8 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         s2_api_key=data.get("s2_api_key", ""),
         notes=data.get("notes", ""),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
+        ollama_think=data.get("ollama_think", False),
+        ollama_num_ctx=max(4096, _safe_int(data.get("ollama_num_ctx"), 32768)),
         acp=AcpConfig(
             agent=acp_data.get("agent", "claude"),
             cwd=acp_data.get("cwd", "."),
