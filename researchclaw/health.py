@@ -158,7 +158,10 @@ def check_ollama_native(
     fallback_models: tuple[str, ...] | list[str] = (),
 ) -> tuple[CheckResult, CheckResult, CheckResult]:
     """Check a native Ollama endpoint and its configured model chain."""
-    url = f"{base_url.rstrip('/')}/api/tags"
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    url = f"{root}/api/tags"
     request = urllib.request.Request(url)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -193,8 +196,14 @@ def check_ollama_native(
     configured = [
         item for item in [primary_model, *fallback_models] if item and item.strip()
     ]
-    missing = [item for item in configured if item not in available]
-    present = [item for item in configured if item in available]
+
+    def is_available(model: str) -> bool:
+        leaf = model.rsplit("/", 1)[-1]
+        aliases = {model} if ":" in leaf else {model, f"{model}:latest"}
+        return bool(aliases & available)
+
+    missing = [item for item in configured if not is_available(item)]
+    present = [item for item in configured if is_available(item)]
 
     connectivity = CheckResult(
         name="llm_connectivity", status="pass", detail=f"Reachable: {url}"
