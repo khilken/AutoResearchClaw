@@ -95,6 +95,11 @@ KB_SUBDIRS = (
 )
 PROJECT_MODES = {"docs-first", "semi-auto", "full-auto"}
 KB_BACKENDS = {"markdown", "obsidian"}
+_OLLAMA_WIRE_API_ALIASES = frozenset({"ollama_native", "ollama", "ollama_chat"})
+_VALID_WIRE_APIS = frozenset({"chat_completions", "responses"}) | _OLLAMA_WIRE_API_ALIASES
+_OLLAMA_THINK_LEVELS = frozenset({"low", "medium", "high"})
+_OLLAMA_NUM_CTX_MIN = 256
+_OLLAMA_NUM_CTX_MAX = 1_048_576
 EXPERIMENT_MODES = {
     "simulated",
     "sandbox",
@@ -202,6 +207,8 @@ class LlmConfig:
     s2_api_key: str = ""
     notes: str = ""
     timeout_sec: int = 600
+    ollama_think: bool | str = False
+    ollama_num_ctx: int = 32768
     acp: AcpConfig = field(default_factory=AcpConfig)
 
 
@@ -1105,11 +1112,32 @@ def validate_config(
         errors.append(f"Invalid knowledge_base.backend: {kb_backend}")
 
     llm_wire_api = _get_by_path(data, "llm.wire_api")
-    if not _is_blank(llm_wire_api) and llm_wire_api not in (
-        "chat_completions",
-        "responses",
-    ):
-        errors.append(f"Invalid llm.wire_api: {llm_wire_api}")
+    if not _is_blank(llm_wire_api):
+        normalized_wire_api = str(llm_wire_api).strip().lower().replace("-", "_")
+        if normalized_wire_api not in _VALID_WIRE_APIS:
+            errors.append(f"Invalid llm.wire_api: {llm_wire_api}")
+
+    llm_think = _get_by_path(data, "llm.ollama_think")
+    if llm_think is not None and not _is_blank(llm_think):
+        if isinstance(llm_think, bool):
+            pass
+        elif (
+            isinstance(llm_think, str)
+            and llm_think.strip().lower() in _OLLAMA_THINK_LEVELS
+        ):
+            pass
+        else:
+            errors.append(f"Invalid llm.ollama_think: {llm_think}")
+
+    llm_num_ctx = _get_by_path(data, "llm.ollama_num_ctx")
+    if llm_num_ctx is not None and not _is_blank(llm_num_ctx):
+        try:
+            num_ctx = int(llm_num_ctx)
+        except (TypeError, ValueError):
+            errors.append(f"Invalid llm.ollama_num_ctx: {llm_num_ctx}")
+        else:
+            if not (_OLLAMA_NUM_CTX_MIN <= num_ctx <= _OLLAMA_NUM_CTX_MAX):
+                errors.append(f"Invalid llm.ollama_num_ctx: {llm_num_ctx}")
 
     hitl_required_stages = _get_by_path(data, "security.hitl_required_stages")
     if hitl_required_stages is not None:
@@ -1166,6 +1194,8 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         s2_api_key=data.get("s2_api_key", ""),
         notes=data.get("notes", ""),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
+        ollama_think=data.get("ollama_think", False),
+        ollama_num_ctx=max(4096, _safe_int(data.get("ollama_num_ctx"), 32768)),
         acp=AcpConfig(
             agent=acp_data.get("agent", "claude"),
             cwd=acp_data.get("cwd", "."),

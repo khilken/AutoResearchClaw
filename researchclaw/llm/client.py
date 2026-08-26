@@ -83,6 +83,11 @@ class LLMConfig:
     retry_base_delay: float = 2.0
     timeout_sec: int = 300
     user_agent: str = _DEFAULT_USER_AGENT
+    # Native Ollama controls. The OpenAI-compatible endpoint cannot reliably
+    # disable Qwen thinking, which can consume the token budget and return no
+    # final answer.
+    ollama_think: bool | str = False
+    ollama_num_ctx: int = 32768
     # MetaClaw bridge: extra headers for proxy requests
     extra_headers: dict[str, str] = field(default_factory=dict)
     # MetaClaw bridge: fallback URL if primary (proxy) is unreachable
@@ -105,15 +110,27 @@ class LLMClient:
             return "chat_completions"
         if normalized == "responses":
             return "responses"
+        if normalized in ("ollama", "ollama_native", "ollama_chat"):
+            return "ollama_native"
         return normalized
 
     def _endpoint_path(self) -> str:
-        if self._normalize_wire_api(self.config.wire_api) == "responses":
+        wire_api = self._normalize_wire_api(self.config.wire_api)
+        if wire_api == "ollama_native":
+            return "/api/chat"
+        if wire_api == "responses":
             return "/responses"
         return "/chat/completions"
 
     def _endpoint_url(self, base_url: str) -> str:
-        return f"{base_url.rstrip('/')}{self._endpoint_path()}"
+        base = base_url.rstrip("/")
+        if self._normalize_wire_api(self.config.wire_api) == "ollama_native":
+            for suffix in ("/api/chat", "/v1", "/api"):
+                if base.endswith(suffix):
+                    base = base[: -len(suffix)]
+                    break
+            return f"{base}/api/chat"
+        return f"{base}{self._endpoint_path()}"
 
     @staticmethod
     def _supports_temperature(model: str) -> bool:
@@ -158,6 +175,8 @@ class LLMClient:
             base_url=base_url,
             api_key=api_key,
             wire_api=getattr(rc_config.llm, "wire_api", "chat_completions"),
+            ollama_think=getattr(rc_config.llm, "ollama_think", False),
+            ollama_num_ctx=getattr(rc_config.llm, "ollama_num_ctx", 32768),
             primary_model=rc_config.llm.primary_model or "gpt-4o",
             fallback_models=list(rc_config.llm.fallback_models or []),
             fallback_url=fallback_url,
@@ -408,8 +427,21 @@ class LLMClient:
             if "api.minimaxi.com" in self.config.base_url or "api.minimax.io" in self.config.base_url:
                 _temp = max(0.0, min(_temp, 1.0))
 
-            if self._normalize_wire_api(self.config.wire_api) == "responses":
+            wire_api = self._normalize_wire_api(self.config.wire_api)
+            if wire_api == "responses":
                 body = self._build_responses_body(model, msgs, max_tokens, _temp)
+            elif wire_api == "ollama_native":
+                body = {
+                    "model": model,
+                    "messages": msgs,
+                    "stream": False,
+                    "think": self.config.ollama_think,
+                    "options": {
+                        "num_ctx": self.config.ollama_num_ctx,
+                        "num_predict": max_tokens,
+                        "temperature": _temp,
+                    },
+                }
             else:
                 body = {
                     "model": model,
@@ -445,7 +477,7 @@ class LLMClient:
                     or _model_lower.startswith("ernie")
                     or _model_lower.startswith("spark")
                     or _model_lower.startswith("gemma")
-                    or self._normalize_wire_api(self.config.wire_api) == "responses"
+                    or wire_api in ("responses", "ollama_native")
                 )
                 if _no_response_format:
                     _json_hint = (
@@ -459,6 +491,8 @@ class LLMClient:
                         msgs.insert(0, {"role": "system", "content": _json_hint})
                 else:
                     body["response_format"] = {"type": "json_object"}
+                if wire_api == "ollama_native":
+                    body["format"] = "json"
 
             payload = json.dumps(body).encode("utf-8")
             url = self._endpoint_url(self.config.base_url)
@@ -527,9 +561,32 @@ class LLMClient:
                 io.BytesIO(error_msg.encode()),
             )
 
-        if self._normalize_wire_api(self.config.wire_api) == "responses":
+        wire_api = self._normalize_wire_api(self.config.wire_api)
+        if wire_api == "ollama_native":
+            return self._parse_ollama_native_response(data, model)
+        if wire_api == "responses":
             return self._parse_responses_response(data, model)
         return self._parse_chat_completions_response(data, model)
+
+    def _parse_ollama_native_response(self, data: dict[str, Any], model: str) -> LLMResponse:
+        message = data.get("message")
+        if not isinstance(message, dict):
+            raise ValueError(f"Malformed Ollama response: missing message. Got: {data}")
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise ValueError(f"Malformed Ollama response: missing message content. Got: {data}")
+        prompt_tokens = int(data.get("prompt_eval_count") or 0)
+        completion_tokens = int(data.get("eval_count") or 0)
+        return LLMResponse(
+            content=content,
+            model=str(data.get("model") or model),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            finish_reason=str(data.get("done_reason") or ""),
+            truncated=data.get("done_reason") == "length",
+            raw=data,
+        )
 
     def _build_responses_body(
         self,
@@ -670,6 +727,10 @@ def create_client_from_yaml(yaml_path: str | None = None) -> LLMClient:
         )
         or ""
     )
+    try:
+        ollama_num_ctx = int(llm_section.get("ollama_num_ctx", 32768) or 32768)
+    except (TypeError, ValueError):
+        ollama_num_ctx = 32768
 
     return LLMClient(
         LLMConfig(
@@ -680,5 +741,7 @@ def create_client_from_yaml(yaml_path: str | None = None) -> LLMClient:
             fallback_models=llm_section.get(
                 "fallback_models", ["gpt-4.1", "gpt-4o-mini"]
             ),
+            ollama_think=llm_section.get("ollama_think", False),
+            ollama_num_ctx=ollama_num_ctx,
         )
     )
