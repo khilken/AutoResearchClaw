@@ -4,6 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from http.client import HTTPMessage
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -15,6 +16,7 @@ from researchclaw.llm.client import (
     LLMResponse,
     _NEW_PARAM_MODELS,
     _NO_TEMPERATURE_MODELS,
+    create_client_from_yaml,
 )
 
 
@@ -339,6 +341,94 @@ def test_ollama_native_endpoint_normalizes_v1_base_url():
     )
 
     assert client._endpoint_url(client.config.base_url) == "http://ollama.example:11434/api/chat"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://ollama.example:11434",
+        "http://ollama.example:11434/",
+        "http://ollama.example:11434/v1",
+        "http://ollama.example:11434/api",
+        "http://ollama.example:11434/api/chat",
+        "http://ollama.example:11434/api/chat/",
+    ],
+)
+def test_ollama_native_endpoint_does_not_double_api_chat(base_url: str):
+    client = LLMClient(
+        LLMConfig(
+            base_url=base_url,
+            api_key="ollama",
+            wire_api="ollama_native",
+        )
+    )
+
+    assert client._endpoint_url(base_url) == "http://ollama.example:11434/api/chat"
+
+
+@pytest.mark.parametrize("wire_api", ["ollama", "ollama_chat", "ollama-native", "ollama-chat"])
+def test_ollama_wire_api_aliases_normalize_to_native(wire_api: str):
+    assert LLMClient._normalize_wire_api(wire_api) == "ollama_native"
+
+
+def test_ollama_native_json_mode_sets_format_json(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req: urllib.request.Request, timeout: int) -> _DummyHTTPResponse:
+        captured["request"] = req
+        return _DummyHTTPResponse(
+            {
+                "model": "qwen3.5:9b",
+                "message": {"role": "assistant", "content": "{\"ok\": true}"},
+                "done": True,
+                "done_reason": "stop",
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    client = LLMClient(
+        LLMConfig(
+            base_url="http://ollama.example:11434",
+            api_key="ollama",
+            wire_api="ollama_native",
+            primary_model="qwen3.5:9b",
+            fallback_models=[],
+        )
+    )
+    _ = client._raw_call(
+        "qwen3.5:9b", [{"role": "user", "content": "json"}], 50, 0.1, True
+    )
+    request = captured["request"]
+    assert isinstance(request, urllib.request.Request)
+    assert isinstance(request.data, bytes)
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["format"] == "json"
+    assert body["messages"][0]["role"] == "system"
+    assert "valid JSON" in body["messages"][0]["content"]
+
+
+def test_create_client_from_yaml_propagates_ollama_options(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "llm:",
+                "  base_url: http://127.0.0.1:11434",
+                "  wire_api: ollama_native",
+                "  primary_model: qwen3.5:9b",
+                "  ollama_think: false",
+                "  ollama_num_ctx: 8192",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    client = create_client_from_yaml(str(config_path))
+
+    assert client.config.wire_api == "ollama_native"
+    assert client.config.ollama_think is False
+    assert client.config.ollama_num_ctx == 8192
 
 
 def test_responses_wire_api_includes_temperature_for_gpt5_models(

@@ -7,6 +7,7 @@ import pytest
 from researchclaw.config import (
     ExperimentConfig,
     LiteratureSearchConfig,
+    LlmConfig,
     RCConfig,
     SandboxConfig,
     SecurityConfig,
@@ -159,6 +160,61 @@ def test_validate_config_accepts_llm_wire_api_ollama_native(tmp_path: Path):
     result = validate_config(data, project_root=tmp_path, check_paths=False)
 
     assert result.ok is True
+
+
+@pytest.mark.parametrize(
+    "wire_api",
+    ["ollama", "ollama_chat", "ollama-native", "ollama-chat"],
+)
+def test_validate_config_accepts_ollama_wire_api_aliases(tmp_path: Path, wire_api: str):
+    data = _valid_config_data()
+    data["llm"]["wire_api"] = wire_api
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is True
+
+
+@pytest.mark.parametrize("think", [True, False, "low", "medium", "high", "HIGH"])
+def test_validate_config_accepts_ollama_think_values(tmp_path: Path, think: object):
+    data = _valid_config_data()
+    data["llm"]["wire_api"] = "ollama_native"
+    data["llm"]["ollama_think"] = think
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is True
+
+
+def test_validate_config_rejects_invalid_ollama_think(tmp_path: Path):
+    data = _valid_config_data()
+    data["llm"]["wire_api"] = "ollama_native"
+    data["llm"]["ollama_think"] = "maybe"
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is False
+    assert any("ollama_think" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("num_ctx", [0, -1, 10_000_000, "huge"])
+def test_validate_config_rejects_invalid_ollama_num_ctx(tmp_path: Path, num_ctx: object):
+    data = _valid_config_data()
+    data["llm"]["wire_api"] = "ollama_native"
+    data["llm"]["ollama_num_ctx"] = num_ctx
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is False
+    assert any("ollama_num_ctx" in error for error in result.errors)
+
+
+def test_llm_config_keeps_positional_api_key_env():
+    config = LlmConfig("openai-compatible", "http://example", "chat_completions", "OPENAI_API_KEY")
+
+    assert config.api_key_env == "OPENAI_API_KEY"
+    assert config.ollama_think is False
+    assert config.ollama_num_ctx == 32768
 
 
 def test_validate_config_rejects_invalid_llm_wire_api(tmp_path: Path):

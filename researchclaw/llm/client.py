@@ -125,10 +125,11 @@ class LLMClient:
     def _endpoint_url(self, base_url: str) -> str:
         base = base_url.rstrip("/")
         if self._normalize_wire_api(self.config.wire_api) == "ollama_native":
-            if base.endswith("/v1"):
-                base = base[:-3]
-            if base.endswith("/api"):
-                return f"{base}/chat"
+            for suffix in ("/api/chat", "/v1", "/api"):
+                if base.endswith(suffix):
+                    base = base[: -len(suffix)]
+                    break
+            return f"{base}/api/chat"
         return f"{base}{self._endpoint_path()}"
 
     @staticmethod
@@ -490,6 +491,8 @@ class LLMClient:
                         msgs.insert(0, {"role": "system", "content": _json_hint})
                 else:
                     body["response_format"] = {"type": "json_object"}
+                if wire_api == "ollama_native":
+                    body["format"] = "json"
 
             payload = json.dumps(body).encode("utf-8")
             url = self._endpoint_url(self.config.base_url)
@@ -724,6 +727,10 @@ def create_client_from_yaml(yaml_path: str | None = None) -> LLMClient:
         )
         or ""
     )
+    try:
+        ollama_num_ctx = int(llm_section.get("ollama_num_ctx", 32768) or 32768)
+    except (TypeError, ValueError):
+        ollama_num_ctx = 32768
 
     return LLMClient(
         LLMConfig(
@@ -734,5 +741,7 @@ def create_client_from_yaml(yaml_path: str | None = None) -> LLMClient:
             fallback_models=llm_section.get(
                 "fallback_models", ["gpt-4.1", "gpt-4o-mini"]
             ),
+            ollama_think=llm_section.get("ollama_think", False),
+            ollama_num_ctx=ollama_num_ctx,
         )
     )
